@@ -20,10 +20,10 @@ from .constants import (
     MODEL_ID,
     SOL_END,
     SOL_START,
-    SYSTEM_PROMPT,
     THINK_END,
     THINK_START,
 )
+from .languages import get_language
 
 
 def resolve_device(device: str | None = "auto") -> tuple[str, torch.dtype]:
@@ -79,6 +79,41 @@ _META_ANSWER_PREFIXES = (
         r"^as (?:a |the )?(?:user|listener)[^.?!]*[.?!]\s*",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"^(?:let me|i(?:'ll| will)|i need to) (?:think|reflect|consider|look)[^.?!]*[.?!]\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^based on (?:the |my )?(?:knowledge|information|context|memory|notes)[^.?!]*[.?!]\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:from|according to) (?:the |my )?(?:knowledge base|records|memory|notes)[^.?!]*[.?!]\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^i (?:recall|remember) (?:from |our )?(?:last time|before|earlier)[^.?!]*[.?!]\s*",
+        re.IGNORECASE,
+    ),
+)
+
+_REASONING_TAG_PATTERN = re.compile(
+    r"<\|(?:begin|end)_of_(?:thought|solution)\|>",
+    re.IGNORECASE,
+)
+
+_PROCESS_PHRASES = (
+    "knowledge base",
+    "my memory",
+    "your memory",
+    "previous session",
+    "prior session",
+    "past conversation",
+    "retrieved",
+    "looked up",
+    "inner process",
+    "reasoning process",
+    "thinking process",
 )
 
 _META_SENTENCE = re.compile(
@@ -136,6 +171,8 @@ def clean_priest_answer(answer: str, listener_name: str | None = None) -> str:
     if not text:
         return ""
 
+    text = _REASONING_TAG_PATTERN.sub("", text).strip()
+
     changed = True
     while changed:
         changed = False
@@ -146,9 +183,23 @@ def clean_priest_answer(answer: str, listener_name: str | None = None) -> str:
                 changed = True
 
     text = _drop_meta_sentences(text)
+    text = _drop_process_sentences(text)
     text = _replace_meta_terms(text, listener_name)
     text = re.sub(r"\s{2,}", " ", text).strip()
     return text
+
+
+def _drop_process_sentences(text: str) -> str:
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    kept: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        lower = part.lower()
+        if any(phrase in lower for phrase in _PROCESS_PHRASES):
+            continue
+        kept.append(part)
+    return " ".join(kept).strip()
 
 
 def build_prompt(
@@ -157,18 +208,32 @@ def build_prompt(
     knowledge_context: str | None = None,
     memory_context: str | None = None,
     listener_name: str | None = None,
+    language_code: str | None = None,
 ) -> str:
-    parts = [f"[SYSTEM]: {SYSTEM_PROMPT}\n"]
+    profile = get_language(language_code)
+    parts = [f"[SYSTEM]: {profile.system_prompt}\n"]
 
     if memory_context and memory_context.strip():
         parts.append(f"[MEMORY]:\n{memory_context.strip()}\n")
 
     if listener_name and listener_name.strip():
-        parts.append(
-            "[LISTENER]: You are speaking with "
-            f"{listener_name.strip()}. Address them by name warmly. "
-            "Never say 'user' or 'listener' in your reply.\n"
-        )
+        if profile.code == "da":
+            parts.append(
+                "[LISTENER]: Du taler med "
+                f"{listener_name.strip()}. Henvend dig varmt ved navn. "
+                "Hold samtalen levende—vejledning og ét naturligt opfølgende spørgsmål. "
+                "Svar på dansk. Nævn aldrig 'bruger' eller 'lytter'. "
+                "Afslør aldrig ræsonnering, hukommelse eller opslag.\n"
+            )
+        else:
+            parts.append(
+                "[LISTENER]: You are speaking with "
+                f"{listener_name.strip()}. Address them by name warmly. "
+                "Keep the exchange conversational—counsel plus one natural follow-up "
+                "question when it helps you understand their topic. "
+                "Never say 'user' or 'listener' in your reply. "
+                "Never reveal reasoning, memory, or knowledge lookup.\n"
+            )
 
     if knowledge_context and knowledge_context.strip():
         parts.append(f"[KNOWLEDGE]:\n{knowledge_context.strip()}\n")
@@ -261,6 +326,7 @@ class SupraReasoningModel:
         knowledge_context: str | None = None,
         memory_context: str | None = None,
         listener_name: str | None = None,
+        language_code: str | None = None,
         max_new_tokens: int = 992,
         temperature: float = 0.7,
         top_p: float = 0.8,
@@ -275,6 +341,7 @@ class SupraReasoningModel:
             knowledge_context,
             memory_context,
             listener_name,
+            language_code,
         )
         inputs = self.tokenizer(full_prompt, return_tensors="pt")
         input_ids = inputs["input_ids"].to(self.torch_device)

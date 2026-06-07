@@ -1,14 +1,29 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
+
+_interrupt_event = threading.Event()
 
 SPEECH_THRESHOLD = 0.0015
 INTERRUPT_THRESHOLD = 0.007
 SILENCE_CHUNKS_TO_END = 2
 MIN_SPEECH_CHUNKS = 1
 STREAM_CHUNK_SECONDS = 0.5
+
+
+def request_interrupt() -> None:
+    _interrupt_event.set()
+
+
+def clear_interrupt() -> None:
+    _interrupt_event.clear()
+
+
+def interrupt_pending() -> bool:
+    return _interrupt_event.is_set()
 
 
 def normalize_audio(data: np.ndarray) -> np.ndarray:
@@ -49,6 +64,7 @@ class ConversationState:
     awaiting_name: bool = False
     name_captured: bool = False
     memory_profile_id: str = ""
+    language_code: str = "en"
 
     def reset_utterance(self) -> None:
         self.speech_chunks = []

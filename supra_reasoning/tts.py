@@ -30,6 +30,15 @@ VOICES = {
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
+def edge_tts_package_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("edge-tts")
+    except Exception:
+        return "unknown"
+
+
 def pop_speakable_phrases(buffer: str, *, min_chars: int = 12) -> tuple[list[str], str]:
     stripped = buffer.strip()
     if not stripped:
@@ -50,6 +59,95 @@ def pop_speakable_phrases(buffer: str, *, min_chars: int = 12) -> tuple[list[str
             return [stripped[:cut].strip()], stripped[cut:].strip()
 
     return [], buffer
+
+
+class EdgeTTSPriest:
+    _fallback_warned = False
+
+    def __init__(
+        self,
+        voice: str = "da-DK-JeppeNeural",
+        speed: float = 1.0,
+    ) -> None:
+        self.voice = voice
+        self.speed = speed
+        self._fallback = KokoroTTS(voice="bm_george", speed=speed, use_gpu=True)
+
+    def _synthesize_edge(self, text: str) -> np.ndarray:
+        import os
+        import tempfile
+
+        import importlib
+
+        import torchaudio
+
+        edge_tts = importlib.import_module("edge_tts")
+        rate = f"{int((self.speed - 1.0) * 100):+d}%"
+        tmp_path = tempfile.mktemp(suffix=".mp3")
+        try:
+            edge_tts.Communicate(text, self.voice, rate=rate).save_sync(tmp_path)
+            waveform, sample_rate = torchaudio.load(tmp_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+        audio = waveform[0].detach().cpu().numpy().astype(np.float32)
+        if sample_rate != SAMPLE_RATE:
+            audio = (
+                torchaudio.functional.resample(
+                    torch.from_numpy(audio),
+                    sample_rate,
+                    SAMPLE_RATE,
+                )
+                .numpy()
+                .astype(np.float32)
+            )
+        return audio
+
+    def stream(self, text: str):
+        text = text.strip()
+        if not text:
+            return
+
+        try:
+            audio = self._synthesize_edge(text)
+            yield SAMPLE_RATE, audio
+        except Exception as exc:
+            if not EdgeTTSPriest._fallback_warned:
+                print(
+                    "WARNING: Danish Edge TTS failed "
+                    f"({exc}). Falling back to offline Kokoro voice. "
+                    "Run: python -m pip install --upgrade edge-tts"
+                )
+                EdgeTTSPriest._fallback_warned = True
+            yield from self._fallback.stream(text)
+
+    def synthesize(self, text: str) -> tuple[int, np.ndarray]:
+        chunks: list[np.ndarray] = []
+        for _, audio in self.stream(text):
+            chunks.append(audio)
+        if not chunks:
+            return SAMPLE_RATE, np.array([], dtype=np.float32)
+        return SAMPLE_RATE, np.concatenate(chunks)
+
+
+def make_priest_tts(
+    language_code: str,
+    voice_label: str,
+    speed: float,
+):
+    from .languages import get_language
+
+    profile = get_language(language_code)
+    voice_id = profile.voices.get(voice_label) or next(iter(profile.voices.values()))
+    if profile.tts_backend == "edge":
+        return EdgeTTSPriest(voice=voice_id, speed=speed)
+    return KokoroTTS(voice=voice_id, speed=speed, use_gpu=True)
+
+
+def warmup_danish_tts(language_code: str, voice_label: str, speed: float) -> None:
+    tts = make_priest_tts(language_code, voice_label, speed)
+    next(tts.stream("Klar."))
 
 
 class KokoroTTS:

@@ -200,7 +200,8 @@ class ConversationMemory:
 
         lines = [
             "You have spoken with this person before. Continue with warmth and consistency.",
-            "Do not mention memory, records, databases, or prior sessions.",
+            "Ask follow-up questions about topics they care about when it deepens the conversation.",
+            "Do not mention memory, records, databases, prior sessions, or that you remember anything.",
         ]
         if profile.name:
             visits = f"{profile.sessions} visit{'s' if profile.sessions != 1 else ''}"

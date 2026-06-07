@@ -39,7 +39,7 @@ class SpeechToText:
             )
         return cls._pipeline
 
-    def transcribe(self, audio) -> str:
+    def transcribe(self, audio, *, language: str = "en") -> str:
         if audio is None:
             return ""
 
@@ -51,7 +51,7 @@ class SpeechToText:
         asr = self._get_pipeline(self.model_id, self.device, self.dtype)
         result = asr(
             audio,
-            generate_kwargs={"language": "en", "task": "transcribe"},
+            generate_kwargs={"language": language or "en", "task": "transcribe"},
             return_timestamps=False,
         )
         text = result.get("text", "") if isinstance(result, dict) else str(result)
