@@ -19,6 +19,9 @@ class LanguageProfile:
     friend_word: str
     listening_template: str
     name_circle_prompt: str
+    name_input_placeholder: str
+    name_input_submit: str
+    name_input_error: str
 
 
 ENGLISH = LanguageProfile(
@@ -82,6 +85,9 @@ ENGLISH = LanguageProfile(
     friend_word="friend",
     listening_template="Listening, {name}…",
     name_circle_prompt="What may I call you?",
+    name_input_placeholder="Type your name",
+    name_input_submit="Continue",
+    name_input_error="Please enter a name I can use.",
 )
 
 DANISH = LanguageProfile(
@@ -140,6 +146,9 @@ DANISH = LanguageProfile(
     friend_word="ven",
     listening_template="Lytter, {name}…",
     name_circle_prompt="Hvad må jeg kalde dig?",
+    name_input_placeholder="Skriv dit navn",
+    name_input_submit="Fortsæt",
+    name_input_error="Skriv venligst et navn jeg kan bruge.",
 )
 
 LANGUAGES: dict[str, LanguageProfile] = {

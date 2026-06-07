@@ -1,0 +1,8 @@
+{
+  "include": ["app.py", "cli.py", "supra_reasoning"],
+  "stubPath": "typings",
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportMissingModuleSource": false,
+  "useLibraryCodeForTypes": false
+}

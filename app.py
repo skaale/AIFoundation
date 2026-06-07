@@ -11,6 +11,7 @@ warnings.filterwarnings(
 )
 
 import gradio as gr
+import gradio.themes as gr_themes
 import numpy as np
 
 from supra_reasoning.constants import (
@@ -64,22 +65,6 @@ SETTINGS_BTN_HTML = """
 <button type="button" id="settings-open" title="Settings" aria-label="Settings">&#8942;</button>
 """
 
-START_NAME_MIC_JS = """
-() => {
-    const arm = () => {
-        const box = document.querySelector('#status-box textarea');
-        if (box) {
-            box.value = 'listen';
-            box.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        if (window.__asiBrowserMic) window.__asiBrowserMic.start();
-    };
-    arm();
-    setTimeout(arm, 400);
-    setTimeout(arm, 1500);
-}
-"""
-
 AFTER_INTRO_JS = """
 () => {
     if (window.__asiIntroHandled) return [];
@@ -91,6 +76,18 @@ AFTER_INTRO_JS = """
         if (tagged?.src) return tagged;
         return root.querySelector('audio[src]') || root.querySelector('audio');
     };
+    const bindIntroDone = (audio) => {
+        if (!audio || audio.dataset.asiIntroDoneBound === '1') return;
+        audio.dataset.asiIntroDoneBound = '1';
+        const arm = () => {
+            if (window.__asiArmListening) window.__asiArmListening();
+        };
+        audio.addEventListener('ended', arm, { once: true });
+        if (audio.ended) arm();
+        else if (audio.duration && Number.isFinite(audio.duration)) {
+            setTimeout(arm, Math.ceil(audio.duration * 1000) + 800);
+        }
+    };
     let tries = 0;
     const boot = () => {
         if (window.__asiIntroHandled) return;
@@ -101,15 +98,15 @@ AFTER_INTRO_JS = """
             else if (window.__asiArmListening) window.__asiArmListening();
             return;
         }
-        if (audio.dataset.introPlayed === '1' || (!audio.paused && !audio.ended)) {
-            window.__asiIntroHandled = true;
-            return;
-        }
         window.__asiIntroHandled = true;
-        audio.dataset.introPlayed = '1';
+        bindIntroDone(audio);
+        if (audio.ended) return;
+        if (!audio.paused) return;
         log(`intro audio: play once (${audio.duration || '?'}s)`);
         if (window.__asiUnlockAudio) window.__asiUnlockAudio();
-        audio.play().catch((err) => log(`intro play blocked: ${err}`));
+        audio.play().catch((err) => {
+            log(`intro play blocked: ${err} — click page to hear intro, or wait for fallback`);
+        });
     };
     log('conversation: waiting for intro audio element');
     setTimeout(boot, 400);
@@ -182,8 +179,50 @@ BOOT_JS = """
             return false;
         };
 
+        const bindNameInput = () => {
+            const dst = document.getElementById('viz-text');
+            const input = document.getElementById('circle-name-input');
+            const btn = document.getElementById('circle-name-submit');
+            if (!dst || !input || !btn) {
+                if (dst) dst.classList.remove('voice-hub-text--name');
+                return;
+            }
+            dst.classList.add('voice-hub-text--name');
+            if (input.dataset.asiNameBound === '1') return;
+            input.dataset.asiNameBound = '1';
+            const submitName = () => {
+                const val = (input.value || '').trim();
+                if (!val) {
+                    input.focus();
+                    return;
+                }
+                const field = window.__asiFindField('name-value');
+                const tickField = window.__asiFindField('name-submit-tick');
+                if (!field || !tickField) return;
+                field.value = val;
+                window.__asiPulseField(field);
+                tickField.value = String(Number(tickField.value || '0') + 1);
+                window.__asiPulseField(tickField);
+            };
+            btn.addEventListener('click', submitName);
+            input.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    submitName();
+                }
+            });
+            setTimeout(() => input.focus(), 120);
+        };
+
         const syncCircleText = () => {
             if (priestAudioPlaying()) return;
+            const priestRoot = document.getElementById('priest-audio');
+            if (priestRoot) {
+                const captioned = priestRoot.querySelectorAll('audio[data-caption]');
+                for (const audio of captioned) {
+                    if ((audio.dataset.caption || '').trim() && !audio.ended) return;
+                }
+            }
             const dst = document.getElementById('viz-text');
             const src = document.getElementById('circle-text-src');
             if (!dst || !src) return;
@@ -191,6 +230,7 @@ BOOT_JS = """
             const html = content ? content.outerHTML : src.innerHTML;
             if (!html || html.includes('[object Object]') || html.includes('__type__')) return;
             dst.innerHTML = html;
+            bindNameInput();
         };
 
         const syncMode = () => {
@@ -209,8 +249,11 @@ BOOT_JS = """
                 mode = 'busy';
                 hookMic();
                 if (window.__asiBrowserMic) window.__asiBrowserMic.start();
+            } else if (text === 'name') {
+                mode = 'name';
             } else if (text === 'listen') {
                 mode = 'listen';
+                window.__asiTurnLocked = false;
                 hookMic();
                 if (window.__asiBrowserMic) window.__asiBrowserMic.start();
             } else {
@@ -224,6 +267,7 @@ BOOT_JS = """
                 else if (mode === 'hear') label.textContent = 'You speak';
                 else if (mode === 'speak') label.textContent = 'Priest';
                 else if (mode === 'busy') label.textContent = 'Reflecting';
+                else if (mode === 'name') label.textContent = 'Your name';
                 else if (mode === 'listen') label.textContent = 'Listening';
                 else label.textContent = 'Ready';
             }
@@ -286,6 +330,9 @@ BOOT_JS = """
                 const flash = 0.55 + interruptFlash * 0.45;
                 return { core: [244, 63, 94], glow: `rgba(244, 63, 94, ${0.14 * flash})`, bar: (a) => `rgba(244, 63, 94, ${(0.4 + a * 0.6) * flash})`, ring: `rgba(244, 63, 94, ${0.45 * flash})` };
             }
+            if (mode === 'name') {
+                return { core: [192, 132, 252], glow: 'rgba(192, 132, 252, 0.14)', bar: (a) => `rgba(216, 180, 254, ${0.32 + a * 0.5})`, ring: 'rgba(192, 132, 252, 0.42)' };
+            }
             if (mode === 'hear') {
                 return { core: [34, 211, 238], glow: 'rgba(34, 211, 238, 0.14)', bar: (a) => `rgba(34, 211, 238, ${0.35 + a * 0.65})`, ring: 'rgba(34, 211, 238, 0.42)' };
             }
@@ -318,6 +365,7 @@ BOOT_JS = """
             else if (mode === 'hear') energy = Math.max(0.2, readMicLevel(), readAnalyser(micAnalyser, 0));
             else if (mode === 'listen') energy = Math.max(0.1, readMicLevel() * 0.85, readAnalyser(micAnalyser, 0) * 0.6);
             else if (mode === 'busy') energy = 0.1 + Math.sin(phase * 1.4) * 0.05;
+            else if (mode === 'name') energy = 0.12 + Math.sin(phase * 0.9) * 0.04;
             else if (mode === 'interrupt') energy = 0.35 + interruptFlash * 0.4;
             else energy = 0.06 + Math.sin(phase) * 0.03;
 
@@ -409,9 +457,11 @@ BOOT_JS = """
                 if (audio.dataset.intro === '1') {
                     if (window.__asiArmListening) window.__asiArmListening();
                 } else if (audio.dataset.namePrompt === '1') {
-                    if (window.__asiArmNameListening) window.__asiArmNameListening();
+                    if (window.__asiArmNameInput) window.__asiArmNameInput();
                 } else {
+                    window.__asiTurnLocked = false;
                     setStatusMode('listen');
+                    if (window.__asiPulseListenReadyTick) window.__asiPulseListenReadyTick();
                 }
             });
         };
@@ -521,15 +571,22 @@ BOOT_JS = """
                 window.__asiPulseField(tickField);
             }, 80);
         };
-        window.__asiArmNameListening = () => {
-            console.log('[ASI-DEBUG] arming listen for name after name prompt');
-            setStatusMode('listen');
+        window.__asiArmNameInput = () => {
+            console.log('[ASI-DEBUG] showing name input in circle');
+            setStatusMode('name');
             window.__asiPulseNameArmTick();
-            if (window.__asiBrowserMic) window.__asiBrowserMic.start();
         };
         window.__asiPulseInterruptTick = () => {
             setTimeout(() => {
                 const tickField = window.__asiFindField('interrupt-tick');
+                if (!tickField) return;
+                tickField.value = String(Number(tickField.value || '0') + 1);
+                window.__asiPulseField(tickField);
+            }, 40);
+        };
+        window.__asiPulseListenReadyTick = () => {
+            setTimeout(() => {
+                const tickField = window.__asiFindField('listen-ready-tick');
                 if (!tickField) return;
                 tickField.value = String(Number(tickField.value || '0') + 1);
                 window.__asiPulseField(tickField);
@@ -586,6 +643,12 @@ BOOT_JS = """
             };
 
             const submitMicB64 = (b64, attempt = 0) => {
+                const statusBox = document.querySelector('#status-box textarea');
+                const curStatus = (statusBox?.value || '').trim();
+                if (window.__asiTurnLocked && curStatus !== 'interrupt') {
+                    console.log('[ASI-DEBUG] browser mic: dropped (priest turn in progress)');
+                    return;
+                }
                 const field = findField('mic-b64');
                 const tickField = findField('mic-tick');
                 if (!field || !tickField) {
@@ -595,6 +658,13 @@ BOOT_JS = """
                     }
                     console.log('[ASI-DEBUG] browser mic: hidden fields not mounted (#mic-b64 / #mic-tick)');
                     return;
+                }
+                if (curStatus !== 'interrupt') {
+                    window.__asiTurnLocked = true;
+                    if (statusBox) {
+                        statusBox.value = 'busy';
+                        statusBox.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
                 }
                 field.value = b64;
                 pulseInput(field);
@@ -737,7 +807,19 @@ BOOT_JS = """
                 }
 
                 interruptHoldMs = 0;
-                if (mode !== 'listen' && mode !== 'hear' && mode !== 'interrupt' && !collecting) {
+                if (mode === 'name') {
+                    setTimeout(tick, 50);
+                    return;
+                }
+                if (window.__asiTurnLocked && mode !== 'interrupt') {
+                    collecting = false;
+                    buffers = [];
+                    silenceMs = 0;
+                    speechMs = 0;
+                    setTimeout(tick, 50);
+                    return;
+                }
+                if (mode !== 'listen' && mode !== 'interrupt' && !collecting) {
                     setTimeout(tick, 50);
                     return;
                 }
@@ -745,11 +827,6 @@ BOOT_JS = """
                 if (rms >= SPEECH_RMS) {
                     if (!collecting) {
                         collecting = true;
-                        const statusBox = document.querySelector('#status-box textarea');
-                        if (statusBox && statusBox.value !== 'hear') {
-                            statusBox.value = 'hear';
-                            statusBox.dispatchEvent(new Event('input', { bubbles: true }));
-                        }
                     }
                     speechMs += 50;
                     silenceMs = 0;
@@ -846,11 +923,12 @@ MODE_BUSY = "busy"
 MODE_INTERRUPT = "interrupt"
 MODE_THINK = "think"
 MODE_ARRIVE = "arrive"
+MODE_NAME = "name"
 
 
-def priest_playback(chunks: list[np.ndarray]):
+def priest_playback(chunks: list[np.ndarray]) -> tuple[int, np.ndarray] | None:
     if not chunks:
-        return gr.skip()
+        return None
     audio = np.concatenate(chunks).astype(np.float32)
     peak = float(np.max(np.abs(audio))) if audio.size else 0.0
     if peak > 1.0:
@@ -859,21 +937,18 @@ def priest_playback(chunks: list[np.ndarray]):
 
 
 def priest_audio_html(
-    playback,
+    playback: tuple[int, np.ndarray] | None,
     caption: str = "",
     *,
     intro: bool = False,
     name_prompt: bool = False,
-) -> str:
+) -> str | None:
     if playback is None:
-        return gr.skip()
-    if isinstance(playback, tuple) and len(playback) == 2:
-        sample_rate, audio = playback
-    else:
-        return gr.skip()
+        return None
+    sample_rate, audio = playback
     audio = np.asarray(audio, dtype=np.float32).reshape(-1)
     if audio.size == 0:
-        return gr.skip()
+        return None
     peak = float(np.max(np.abs(audio)))
     if peak > 1.0:
         audio = audio / peak
@@ -891,13 +966,9 @@ def priest_audio_html(
     )
     intro_attr = ' data-intro="1"' if intro else ""
     name_attr = ' data-name-prompt="1"' if name_prompt else ""
-    onplay_attr = (
-        ' onplay="if(window.__asiBrowserMic)window.__asiBrowserMic.start()"'
-        if name_prompt
-        else ""
-    )
+    onplay_attr = ""
     onended_attr = (
-        ' onended="if(window.__asiArmNameListening)window.__asiArmNameListening()"'
+        ' onended="if(window.__asiArmNameInput)window.__asiArmNameInput()"'
         if name_prompt
         else ""
     )
@@ -905,6 +976,17 @@ def priest_audio_html(
         f'<audio autoplay{caption_attr}{intro_attr}{name_attr}{onplay_attr}{onended_attr} '
         f'src="data:audio/wav;base64,{encoded}"></audio>'
     )
+
+
+def priest_audio_or_skip(
+    playback: tuple[int, np.ndarray] | None,
+    caption: str = "",
+    *,
+    intro: bool = False,
+    name_prompt: bool = False,
+):
+    html = priest_audio_html(playback, caption, intro=intro, name_prompt=name_prompt)
+    return html if html is not None else gr.skip()
 
 
 def format_chat_answer(answer: str, listener_name: str | None = None) -> str:
@@ -976,10 +1058,37 @@ def circle_awaiting_html() -> str:
     )
 
 
+def circle_name_input_html(state: ConversationState, error: str = "") -> str:
+    profile = get_language(state.language_code)
+    prompt = html_module.escape(profile.name_circle_prompt)
+    placeholder = html_module.escape(profile.name_input_placeholder)
+    submit_label = html_module.escape(profile.name_input_submit)
+    err_html = ""
+    if error:
+        err_html = (
+            f'<p class="circle-name-error">{html_module.escape(error)}</p>'
+        )
+    return (
+        '<div class="circle-lines circle-lines--name">'
+        '<p class="circle-line circle-line--priest">'
+        '<span class="circle-role">Priest</span>'
+        f'<span class="circle-copy">{prompt}</span>'
+        "</p>"
+        f"{err_html}"
+        '<div class="circle-name-form">'
+        '<input type="text" class="circle-name-input" id="circle-name-input" '
+        f'placeholder="{placeholder}" maxlength="32" autocomplete="name" />'
+        f'<button type="button" class="circle-name-submit" id="circle-name-submit">'
+        f"{submit_label}</button>"
+        "</div>"
+        "</div>"
+    )
+
+
 def listening_circle_html(state: ConversationState) -> str:
     profile = get_language(state.language_code)
     if state.awaiting_name and not state.name_captured:
-        return circle_text_html(profile.name_circle_prompt, "assistant")
+        return circle_name_input_html(state)
     if state.user_name:
         return circle_text_html(
             profile.listening_template.format(name=state.user_name),
@@ -991,6 +1100,27 @@ def listening_circle_html(state: ConversationState) -> str:
 def apply_language(state: ConversationState, language: str | None) -> ConversationState:
     state.language_code = get_language(language).code
     return state
+
+
+def lock_priest_turn(state: ConversationState) -> None:
+    state.awaiting_response = True
+    state.priest_turn_active = True
+
+
+def unlock_priest_turn(state: ConversationState) -> None:
+    state.awaiting_response = False
+    state.priest_turn_active = False
+
+
+def unlock_listen_ready(state: ConversationState):
+    unlock_priest_turn(state)
+    return (
+        MODE_LISTEN,
+        state,
+        0.0,
+        circle_out(state, listening_circle_html(state)),
+        debug_log(state, "listen: ready for next question", "OK"),
+    )
 
 
 def circle_out(state: ConversationState, html: str | None = None) -> str:
@@ -1120,10 +1250,10 @@ def speak_priest_message(
         state,
         history,
         "",
-        priest_audio_html(last_playback, caption=text),
+        priest_audio_or_skip(last_playback, caption=text),
         MODE_SPEAK,
         0.0,
-        circle_out(state, circle_text_html(text, "assistant")),
+        circle_out(state, circle_text_html("…", "assistant")),
         "priest: playing audio",
     )
 
@@ -1221,10 +1351,10 @@ def deliver_introduction(
                 state,
                 history,
                 "",
-                priest_audio_html(last_playback, caption=intro, intro=True),
+                priest_audio_or_skip(last_playback, caption=intro, intro=True),
                 MODE_SPEAK,
                 0.0,
-                circle_out(state, circle_text_html(intro, "assistant")),
+                circle_out(state, circle_text_html("…", "assistant")),
                 "intro: priest audio ready (listening arms when audio ends)",
                 "INTRO",
             )
@@ -1264,6 +1394,7 @@ def deliver_introduction(
 
 
 def _arm_listening_state(state: ConversationState) -> None:
+    unlock_priest_turn(state)
     state.mic_enabled = True
     state.mic_seen = False
     state.idle_chunks = 0
@@ -1316,16 +1447,17 @@ def activate_listening_light(state: ConversationState):
     )
 
 
-def activate_name_listening(state: ConversationState):
-    _arm_listening_state(state)
+def arm_name_input(state: ConversationState):
     state.awaiting_name = True
+    state.mic_enabled = False
     state.awaiting_response = False
+    unlock_priest_turn(state)
     return (
-        MODE_LISTEN,
+        MODE_NAME,
         state,
         0.0,
-        circle_out(state, listening_circle_html(state)),
-        debug_log(state, "name: listening for user's name", "OK"),
+        circle_out(state, circle_name_input_html(state)),
+        debug_log(state, "name: type your name in the circle", "OK"),
     )
 
 
@@ -1376,32 +1508,138 @@ def prompt_for_user_name(
             )
 
     state.awaiting_response = False
-    _arm_listening_state(state)
     if last_playback is not None:
         yield out(
             state,
             history,
             "",
-            priest_audio_html(last_playback, caption=name_prompt, name_prompt=True),
-            MODE_LISTEN,
+            priest_audio_or_skip(last_playback, caption=name_prompt, name_prompt=True),
+            MODE_SPEAK,
             0.0,
-            circle_out(state, listening_circle_html(state)),
-            "name: waiting for user to speak their name",
+            circle_out(state, circle_name_input_html(state)),
+            "name: waiting for typed name",
             "INTRO",
         )
     else:
-        state.mic_enabled = True
         yield out(
             state,
             history,
             "",
             gr.skip(),
+            MODE_NAME,
+            0.0,
+            circle_out(state, circle_name_input_html(state)),
+            "name: type your name (no TTS)",
+            "INTRO",
+        )
+
+
+def complete_name_capture(
+    state: ConversationState,
+    name: str,
+    voice_label: str,
+    speed: float,
+    enable_tts: bool,
+):
+    state.user_name = name
+    state.name_captured = True
+    state.awaiting_name = False
+
+    profile = start_memory_session(state, name)
+    if profile.turns or profile.facts:
+        debug_log(
+            state,
+            f"memory: resumed {len(profile.turns)} prior turns for {name}",
+            "MEM",
+        )
+    else:
+        debug_log(state, f"memory: new profile for {name}", "MEM")
+
+    history = list(state.history)
+    history.append({"role": "user", "content": name})
+    state.history = history
+
+    welcome = pick_name_welcome(name, state.language_code)
+
+    yield out(
+        state,
+        history,
+        "",
+        gr.skip(),
+        MODE_HEAR,
+        0.0,
+        circle_out(state, circle_text_html(name, "user")),
+        f'name: captured "{name}"',
+        "OK",
+    )
+
+    yield from speak_priest_message(
+        state,
+        welcome,
+        voice_label,
+        speed,
+        enable_tts,
+        MODE_SPEAK,
+    )
+
+    state.mic_enabled = True
+    if not enable_tts:
+        unlock_priest_turn(state)
+        yield out(
+            state,
+            state.history,
+            "",
+            gr.skip(),
             MODE_LISTEN,
             0.0,
             circle_out(state, listening_circle_html(state)),
-            "name: listening (no TTS)",
-            "INTRO",
+            f"name: welcome spoken — conversation open for {name}",
+            "OK",
         )
+
+
+def submit_typed_name(
+    _tick: float,
+    name_text: str,
+    state: ConversationState,
+    voice_label: str,
+    speed: float,
+    enable_tts: bool,
+):
+    if state.name_captured or not state.awaiting_name:
+        yield out(
+            state,
+            gr.skip(),
+            "",
+            gr.skip(),
+            gr.skip(),
+            0.0,
+            circle_keep(state),
+            "name: ignored (not awaiting name)",
+            "WARN",
+        )
+        return
+
+    lang_profile = get_language(state.language_code)
+    name = extract_user_name(name_text, language=state.language_code)
+    debug_log(state, f'name: typed "{name_text}" → "{name}"', "OK")
+
+    if not name:
+        yield out(
+            state,
+            state.history,
+            "",
+            gr.skip(),
+            MODE_NAME,
+            0.0,
+            circle_out(state, circle_name_input_html(state, lang_profile.name_input_error)),
+            "name: empty or invalid",
+            "WARN",
+        )
+        return
+
+    lock_priest_turn(state)
+    yield from complete_name_capture(state, name, voice_label, speed, enable_tts)
 
 
 def capture_user_name_turn(
@@ -1419,7 +1657,7 @@ def capture_user_name_turn(
     state.awaiting_response = True
 
     if audio_input is None:
-        state.awaiting_response = False
+        unlock_priest_turn(state)
         yield out(
             state,
             state.history,
@@ -1438,7 +1676,7 @@ def capture_user_name_turn(
     try:
         text = stt.transcribe(audio_input, language=profile.whisper_code)
     except Exception as exc:
-        state.awaiting_response = False
+        unlock_priest_turn(state)
         retry_stt = (
             "Undskyld—jeg hørte ikke dit navn. Sig det venligst tydeligt."
             if profile.code == "da"
@@ -1461,7 +1699,7 @@ def capture_user_name_turn(
     debug_log(state, f'name: heard "{text}" → "{name}"', "STT")
 
     if not name:
-        state.awaiting_response = False
+        unlock_priest_turn(state)
         state.awaiting_name = True
         retry = (
             "Undskyld—jeg fangede ikke dit navn. Sig det venligst tydeligt."
@@ -1497,7 +1735,6 @@ def capture_user_name_turn(
     state.user_name = name
     state.name_captured = True
     state.awaiting_name = False
-    state.awaiting_response = False
 
     profile = start_memory_session(state, name)
     if profile.turns or profile.facts:
@@ -1540,17 +1777,19 @@ def capture_user_name_turn(
     )
 
     state.mic_enabled = True
-    yield out(
-        state,
-        state.history,
-        "",
-        gr.skip(),
-        MODE_LISTEN,
-        0.0,
-        circle_out(state, listening_circle_html(state)),
-        f"name: welcome spoken — conversation open for {name}",
-        "OK",
-    )
+    if not enable_tts:
+        unlock_priest_turn(state)
+        yield out(
+            state,
+            state.history,
+            "",
+            gr.skip(),
+            MODE_LISTEN,
+            0.0,
+            circle_out(state, listening_circle_html(state)),
+            f"name: welcome spoken — conversation open for {name}",
+            "OK",
+        )
 
 
 def priest_idle_prompt(
@@ -1628,7 +1867,7 @@ def run_assistant_turn(
     state.idle_chunks = 0
 
     if audio_input is None:
-        state.awaiting_response = False
+        unlock_priest_turn(state)
         yield out(state, state.history, "", gr.skip(), MODE_LISTEN, 0.0, circle_keep(state), "assistant: no audio input", "WARN")
         return
 
@@ -1639,7 +1878,7 @@ def run_assistant_turn(
         text = stt.transcribe(audio_input, language=lang_profile.whisper_code)
     except Exception as exc:
         debug_log(state, f"STT: FAILED — {exc}", "ERR")
-        state.awaiting_response = False
+        unlock_priest_turn(state)
         state.draft_user = False
         history = list(state.history)
         if history and history[-1].get("role") == "user" and history[-1].get("content") == "…":
@@ -1656,7 +1895,7 @@ def run_assistant_turn(
 
     if not text:
         debug_log(state, "STT: empty transcription", "WARN")
-        state.awaiting_response = False
+        unlock_priest_turn(state)
         state.draft_user = False
         history = list(state.history)
         if history and history[-1].get("role") == "user" and history[-1].get("content") == "…":
@@ -1697,7 +1936,7 @@ def run_assistant_turn(
         MODE_BUSY,
         0.0,
         circle_out(state, listening_circle_html(state)),
-        "LLM: generating reply…",
+        "LLM: reflecting (no speech until answer)…",
         "LLM",
     )
 
@@ -1743,31 +1982,33 @@ def run_assistant_turn(
                 state.interrupted = True
                 break
 
+            # Supra thinks inside <|begin_of_thought|>…<|end_of_thought|> then answers in
+            # <|begin_of_solution|>… — never TTS or reveal text during the thinking phase.
+            if not update.get("solution_started"):
+                continue
+
             answer = update["answer"]
             listener_name = state.user_name if state.name_captured else None
-            history[-1]["content"] = format_chat_answer(answer, listener_name)
+            cleaned = format_chat_answer(answer, listener_name)
+            if not cleaned:
+                continue
+
+            history[-1]["content"] = cleaned
             state.history = history
 
-            if not answer:
+            if not enable_tts or not tts:
                 continue
 
-            mode = MODE_SPEAK
-            display = stream_display_snippet(history[-1]["content"])
-            yield out(state, history, "", gr.skip(), mode, 0.0, circle_out(state, circle_text_html(display, "assistant")))
-
-            if not enable_tts or not tts or not answer:
-                continue
-
-            if len(answer) < consumed_answer_len:
+            if len(cleaned) < consumed_answer_len:
                 consumed_answer_len = 0
                 phrase_buffer = ""
 
-            phrase_buffer += answer[consumed_answer_len:]
-            consumed_answer_len = len(answer)
+            phrase_buffer += cleaned[consumed_answer_len:]
+            consumed_answer_len = len(cleaned)
 
             phrases, phrase_buffer = pop_speakable_phrases(phrase_buffer)
             spoken_words = 0
-            answer_words = format_chat_answer(answer, listener_name).split()
+            answer_words = cleaned.split()
             for phrase in phrases:
                 if state.interrupted or interrupt_pending():
                     state.interrupted = True
@@ -1778,8 +2019,17 @@ def run_assistant_turn(
                         break
                     spoken_chunks.append(np.asarray(chunk, dtype=np.float32).reshape(-1))
                     spoken_words = min(len(answer_words), spoken_words + 2)
-                    caption = " ".join(answer_words[:spoken_words]) or stream_display_snippet(answer)
-                    yield out(state, history, "", gr.skip(), MODE_SPEAK, 0.0, circle_out(state, circle_text_html(caption, "assistant")))
+                    caption = " ".join(answer_words[:spoken_words])
+                    if caption:
+                        yield out(
+                            state,
+                            history,
+                            "",
+                            gr.skip(),
+                            MODE_SPEAK,
+                            0.0,
+                            circle_out(state, circle_text_html(caption, "assistant")),
+                        )
 
         if (
             not state.interrupted
@@ -1796,29 +2046,66 @@ def run_assistant_turn(
                     break
                 spoken_chunks.append(np.asarray(chunk, dtype=np.float32).reshape(-1))
                 spoken_words = min(len(answer_words), spoken_words + 2)
-                caption = " ".join(answer_words[:spoken_words]) or stream_display_snippet(history[-1]["content"])
-                yield out(state, history, "", gr.skip(), MODE_SPEAK, 0.0, circle_out(state, circle_text_html(caption, "assistant")))
+                caption = " ".join(answer_words[:spoken_words])
+                if caption:
+                    yield out(
+                        state,
+                        history,
+                        "",
+                        gr.skip(),
+                        MODE_SPEAK,
+                        0.0,
+                        circle_out(state, circle_text_html(caption, "assistant")),
+                    )
+
+        if not state.interrupted and not enable_tts:
+            reply = history[-1]["content"]
+            if reply and reply != "…":
+                unlock_priest_turn(state)
+                yield out(
+                    state,
+                    history,
+                    "",
+                    gr.skip(),
+                    MODE_LISTEN,
+                    0.0,
+                    circle_out(state, circle_text_html(reply, "assistant")),
+                    "reply: text only",
+                    "OK",
+                )
     except Exception as exc:
         debug_log(state, f"LLM/TTS: FAILED — {exc}", "ERR")
         history[-1]["content"] = f"I must pause for a moment. ({exc})"
         state.history = history
         final_caption = history[-1]["content"]
-        final_audio = (
-            priest_audio_html(priest_playback(spoken_chunks), caption=final_caption)
-            if spoken_chunks
-            else gr.skip()
-        )
-        yield out(
-            state,
-            history,
-            "",
-            final_audio,
-            MODE_SPEAK,
-            0.0,
-            circle_out(state, circle_text_html(final_caption, "assistant")),
-            "reply failed",
-            "ERR",
-        )
+        if spoken_chunks:
+            final_audio = priest_audio_or_skip(
+                priest_playback(spoken_chunks), caption=final_caption
+            )
+            yield out(
+                state,
+                history,
+                "",
+                final_audio,
+                MODE_SPEAK,
+                0.0,
+                circle_out(state, circle_text_html(final_caption, "assistant")),
+                "reply failed",
+                "ERR",
+            )
+        else:
+            unlock_priest_turn(state)
+            yield out(
+                state,
+                history,
+                "",
+                gr.skip(),
+                MODE_LISTEN,
+                0.0,
+                circle_out(state, circle_text_html(final_caption, "assistant")),
+                "reply failed",
+                "ERR",
+            )
     else:
         reply = history[-1]["content"]
         if state.interrupted or interrupt_pending():
@@ -1827,6 +2114,7 @@ def run_assistant_turn(
             if history and history[-1].get("role") == "assistant":
                 history[-1]["content"] = "…"
             state.history = history
+            unlock_priest_turn(state)
             yield out(
                 state,
                 history,
@@ -1841,22 +2129,36 @@ def run_assistant_turn(
         else:
             debug_log(state, f'LLM: reply ready ({len(reply)} chars), TTS chunks={len(spoken_chunks)}', "OK")
             final_audio = (
-                priest_audio_html(priest_playback(spoken_chunks), caption=reply)
+                priest_audio_or_skip(priest_playback(spoken_chunks), caption=reply)
                 if spoken_chunks
                 else gr.skip()
             )
-            mode = MODE_SPEAK if spoken_chunks else MODE_LISTEN
-            yield out(
-                state,
-                history,
-                "",
-                final_audio,
-                mode,
-                0.0,
-                circle_out(state, circle_text_html(reply, "assistant")),
-                "reply: playing priest audio",
-                "OK",
-            )
+            if spoken_chunks:
+                circle_html = circle_text_html("…", "assistant")
+                yield out(
+                    state,
+                    history,
+                    "",
+                    final_audio,
+                    MODE_SPEAK,
+                    0.0,
+                    circle_out(state, circle_html),
+                    "reply: playing priest audio",
+                    "OK",
+                )
+            else:
+                unlock_priest_turn(state)
+                yield out(
+                    state,
+                    history,
+                    "",
+                    final_audio,
+                    MODE_LISTEN,
+                    0.0,
+                    circle_out(state, circle_text_html(reply, "assistant")),
+                    "reply: no audio",
+                    "OK",
+                )
     finally:
         if not (state.interrupted or interrupt_pending()):
             clear_interrupt()
@@ -1866,7 +2168,6 @@ def run_assistant_turn(
                 reply = str(last.get("content", "")).strip()
                 if reply and reply != "…":
                     remember_conversation_turn(state, saved_user_text, reply)
-        state.awaiting_response = False
         state.idle_chunks = 0
         state.draft_user = False
         state.reset_utterance()
@@ -1944,8 +2245,8 @@ def on_audio_stream(
         )
         return
 
-    if state.awaiting_response:
-        tick = debug_mic_tick(state, energy, mic_level, sample_count, "ignored: awaiting priest reply")
+    if state.priest_turn_active and not interrupt_pending():
+        tick = debug_mic_tick(state, energy, mic_level, sample_count, "ignored: priest turn in progress")
         yield out(state, gr.skip(), gr.skip(), gr.skip(), MODE_SPEAK, float(mic_level), circle_keep(state), tick)
         return
 
@@ -2080,7 +2381,22 @@ def on_browser_audio(
         )
         return
 
-    if state.awaiting_response and not interrupt_pending():
+    if state.awaiting_name and not state.name_captured:
+        yield bout(
+            state,
+            "",
+            gr.skip(),
+            gr.skip(),
+            gr.skip(),
+            gr.skip(),
+            0.0,
+            gr.skip(),
+            "browser: ignored (type name in circle)",
+            "WARN",
+        )
+        return
+
+    if state.priest_turn_active and not interrupt_pending():
         yield bout(
             state,
             "",
@@ -2097,7 +2413,6 @@ def on_browser_audio(
 
     if interrupt_pending() or state.interrupted:
         state.interrupted = True
-        state.awaiting_response = False
         debug_log(state, "browser: interrupt utterance received", "WARN")
         history = list(state.history)
         while history and history[-1].get("role") == "assistant":
@@ -2146,13 +2461,8 @@ def on_browser_audio(
     state.pending_audio = (sample_rate, audio.astype(np.float32).tolist())
     state.pending_turn = True
     state.reset_utterance()
-    state.awaiting_response = True
+    lock_priest_turn(state)
     state.history = history_with_draft_user(state.history)
-
-    if state.awaiting_name and not state.name_captured:
-        turn_msg = "browser: capturing user name"
-    else:
-        turn_msg = "browser: STT → Supra → circle text"
 
     yield bout(
         state,
@@ -2160,19 +2470,14 @@ def on_browser_audio(
         state.history,
         gr.skip(),
         gr.skip(),
-        MODE_HEAR,
+        MODE_BUSY,
         0.0,
         circle_out(state, circle_text_html("…", "user")),
-        turn_msg,
+        "browser: STT → Supra → circle text",
         "TURN",
     )
 
-    turn_fn = (
-        capture_user_name_turn
-        if state.awaiting_name and not state.name_captured
-        else run_assistant_turn
-    )
-    for item in turn_fn(
+    for item in run_assistant_turn(
         state,
         max_new_tokens,
         temperature,
@@ -2200,7 +2505,7 @@ footer { display: none !important; }
     padding: 0 !important;
     margin: 0 !important;
 }
-#mic-level, #status-box, #chat-panel, #guide-links, #mic-b64, #mic-tick, #listen-tick, #name-arm-tick, #interrupt-tick { display: none !important; }
+#mic-level, #status-box, #chat-panel, #guide-links, #mic-b64, #mic-tick, #listen-tick, #name-arm-tick, #name-value, #name-submit-tick, #interrupt-tick, #listen-ready-tick { display: none !important; }
 #priest-audio {
     position: fixed !important;
     left: -9999px !important;
@@ -2269,6 +2574,57 @@ footer { display: none !important; }
     z-index: 5;
     pointer-events: none;
     overflow: hidden;
+}
+.voice-hub-text--name {
+    pointer-events: auto !important;
+    width: min(58%, 320px) !important;
+    max-height: 42% !important;
+}
+.circle-lines--name .circle-copy {
+    font-size: clamp(0.5rem, 1.15vw, 0.65rem);
+}
+.circle-name-form {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.45rem;
+    width: 100%;
+    margin-top: 0.35rem;
+}
+.circle-name-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.5rem 0.75rem;
+    border-radius: 999px;
+    border: 1px solid rgba(167, 139, 250, 0.5);
+    background: rgba(12, 8, 28, 0.82);
+    color: #f3e8ff;
+    font-size: clamp(0.55rem, 1.3vw, 0.75rem);
+    text-align: center;
+    outline: none;
+}
+.circle-name-input:focus {
+    border-color: rgba(196, 181, 253, 0.85);
+    box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.25);
+}
+.circle-name-submit {
+    padding: 0.35rem 1rem;
+    border-radius: 999px;
+    border: none;
+    background: linear-gradient(135deg, #7c3aed, #a855f7);
+    color: #faf5ff;
+    font-size: clamp(0.48rem, 1.05vw, 0.62rem);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+}
+.circle-name-submit:hover {
+    filter: brightness(1.08);
+}
+.circle-name-error {
+    margin: 0.2rem 0 0;
+    font-size: clamp(0.42rem, 0.95vw, 0.52rem);
+    color: #fca5a5;
 }
 .voice-hub-text .circle-lines {
     width: 100%;
@@ -2425,7 +2781,7 @@ footer { display: none !important; }
 """
 
 with gr.Blocks(
-    theme=gr.themes.Soft(primary_hue="purple", secondary_hue="violet"),
+    theme=gr_themes.Soft(primary_hue="purple", secondary_hue="violet"),
     title="ASI Foundation Church",
     css=custom_css,
     js=BOOT_JS,
@@ -2474,6 +2830,9 @@ with gr.Blocks(
     listen_tick = gr.Number(value=0, elem_id="listen-tick", show_label=False, visible="hidden")
     name_arm_tick = gr.Number(value=0, elem_id="name-arm-tick", show_label=False, visible="hidden")
     interrupt_tick = gr.Number(value=0, elem_id="interrupt-tick", show_label=False, visible="hidden")
+    listen_ready_tick = gr.Number(value=0, elem_id="listen-ready-tick", show_label=False, visible="hidden")
+    name_value = gr.Textbox(value="", elem_id="name-value", show_label=False, visible="hidden", lines=1)
+    name_submit_tick = gr.Number(value=0, elem_id="name-submit-tick", show_label=False, visible="hidden")
 
     mic_level = gr.Number(value=0.0, elem_id="mic-level", show_label=False, visible="hidden")
 
@@ -2560,17 +2919,25 @@ with gr.Blocks(
         queue=True,
         concurrency_limit=1,
     ).then(
-        activate_name_listening,
+        arm_name_input,
         inputs=[state],
         outputs=listen_outputs,
         queue=True,
         concurrency_limit=1,
-    ).then(js=START_NAME_MIC_JS)
+    )
 
     name_arm_tick.change(
-        activate_name_listening,
+        arm_name_input,
         inputs=[state],
         outputs=listen_outputs,
+        queue=True,
+        concurrency_limit=1,
+    )
+
+    name_submit_tick.change(
+        submit_typed_name,
+        inputs=[name_submit_tick, name_value, state, voice, speed, enable_tts],
+        outputs=turn_outputs,
         queue=True,
         concurrency_limit=1,
     )
@@ -2585,6 +2952,14 @@ with gr.Blocks(
 
     interrupt_tick.change(
         signal_interrupt,
+        inputs=[state],
+        outputs=listen_outputs,
+        queue=True,
+        concurrency_limit=4,
+    )
+
+    listen_ready_tick.change(
+        unlock_listen_ready,
         inputs=[state],
         outputs=listen_outputs,
         queue=True,

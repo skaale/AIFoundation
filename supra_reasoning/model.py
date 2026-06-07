@@ -375,6 +375,12 @@ class SupraReasoningModel:
             accumulated += token
             raw = _clean_generated(accumulated)
             thought, answer = parse_output(raw)
-            yield {"thought": thought, "answer": answer, "token": token}
+            yield {
+                "thought": thought,
+                "answer": answer,
+                "token": token,
+                "thinking": THINK_START in raw and THINK_END not in raw,
+                "solution_started": SOL_START in raw,
+            }
 
         thread.join()

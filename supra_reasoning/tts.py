@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import warnings
+from collections.abc import Iterator, Sequence
+from typing import Any, Protocol
 
 warnings.filterwarnings(
     "ignore",
@@ -28,6 +30,10 @@ VOICES = {
 }
 
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+class PriestTTS(Protocol):
+    def stream(self, text: str) -> Iterator[tuple[int, np.ndarray]]: ...
 
 
 def edge_tts_package_version() -> str:
@@ -135,7 +141,7 @@ def make_priest_tts(
     language_code: str,
     voice_label: str,
     speed: float,
-):
+) -> PriestTTS:
     from .languages import get_language
 
     profile = get_language(language_code)
@@ -153,7 +159,8 @@ def warmup_danish_tts(language_code: str, voice_label: str, speed: float) -> Non
 class KokoroTTS:
     _model: KModel | None = None
     _pipelines: dict[str, KPipeline] = {}
-    _voice_packs: dict[str, object] = {}
+    _voice_packs: dict[str, Sequence[Any]] = {}
+    pack: Sequence[Any]
 
     def __init__(
         self,
@@ -193,10 +200,13 @@ class KokoroTTS:
         if not text:
             return
 
+        model = self._model
+        if model is None:
+            return
         for _, ps, _ in self.pipeline(text, self.voice, self.speed):
             ref_s = self.pack[len(ps) - 1]
             with torch.no_grad():
-                audio = self._model(ps, ref_s, self.speed)
+                audio = model(ps, ref_s, self.speed)
             yield SAMPLE_RATE, audio.numpy()
 
     def synthesize(self, text: str) -> tuple[int, np.ndarray]:

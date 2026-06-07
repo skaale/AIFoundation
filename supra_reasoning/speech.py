@@ -4,7 +4,7 @@ import re
 
 import numpy as np
 
-from .tts import SAMPLE_RATE, KokoroTTS, pop_speakable_phrases
+from .tts import SAMPLE_RATE, PriestTTS, pop_speakable_phrases
 
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
@@ -29,7 +29,7 @@ def split_for_speech(text: str) -> list[str]:
     return phrases
 
 
-def stream_priest_voice(tts: KokoroTTS, text: str):
+def stream_priest_voice(tts: PriestTTS, text: str):
     spoken: list[np.ndarray] = []
     for phrase in split_for_speech(text):
         for _, chunk in tts.stream(phrase):
@@ -40,7 +40,7 @@ def stream_priest_voice(tts: KokoroTTS, text: str):
 
 
 def captioned_priest_voice(
-    tts: KokoroTTS,
+    tts: PriestTTS,
     text: str,
     words_per_step: int = 2,
 ):

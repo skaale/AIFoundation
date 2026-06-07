@@ -65,6 +65,7 @@ class ConversationState:
     name_captured: bool = False
     memory_profile_id: str = ""
     language_code: str = "en"
+    priest_turn_active: bool = False
 
     def reset_utterance(self) -> None:
         self.speech_chunks = []
