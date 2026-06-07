@@ -14,12 +14,18 @@ import gradio as gr
 import numpy as np
 
 from supra_reasoning.constants import (
-    CHURCH_INTRODUCTION,
     IDLE_SECONDS_BEFORE_PROMPT,
+    MAX_PROMPT_HISTORY_MESSAGES,
     MODEL_ID,
     PRIEST_VOICE,
     SILENCE_PROMPT,
+    intro_opening_line,
+    pick_intro_greeting,
+    pick_name_prompt,
+    pick_name_welcome,
 )
+from supra_reasoning.memory import ConversationMemory, MemoryProfile
+from supra_reasoning.identity import extract_user_name
 from supra_reasoning.conversation import (
     INTERRUPT_THRESHOLD,
     STREAM_CHUNK_SECONDS,
@@ -30,13 +36,31 @@ from supra_reasoning.conversation import (
     store_speech_chunk,
 )
 from supra_reasoning.debug import debug_log, debug_mic_tick, debug_view
-from supra_reasoning.model import SupraReasoningModel
+from supra_reasoning.knowledge import KnowledgeTree
+from supra_reasoning.model import SupraReasoningModel, clean_priest_answer
+from supra_reasoning.rag import retrieve_knowledge
 from supra_reasoning.speech import captioned_priest_voice
 from supra_reasoning.stt import SpeechToText
 from supra_reasoning.tts import SAMPLE_RATE, VOICES, KokoroTTS, pop_speakable_phrases
 
 SETTINGS_BTN_HTML = """
 <button type="button" id="settings-open" title="Settings" aria-label="Settings">&#8942;</button>
+"""
+
+START_NAME_MIC_JS = """
+() => {
+    const arm = () => {
+        const box = document.querySelector('#status-box textarea');
+        if (box) {
+            box.value = 'listen';
+            box.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        if (window.__asiBrowserMic) window.__asiBrowserMic.start();
+    };
+    arm();
+    setTimeout(arm, 400);
+    setTimeout(arm, 1500);
+}
 """
 
 AFTER_INTRO_JS = """
@@ -319,7 +343,7 @@ BOOT_JS = """
             };
             audio.addEventListener('play', () => {
                 if (audio.dataset.intro === '1') audio.dataset.introPlayed = '1';
-                setStatusMode('speak');
+                if (audio.dataset.namePrompt !== '1') setStatusMode('speak');
                 paint(1);
             });
             audio.addEventListener('timeupdate', reveal);
@@ -327,6 +351,8 @@ BOOT_JS = """
                 paint(words.length);
                 if (audio.dataset.intro === '1') {
                     if (window.__asiArmListening) window.__asiArmListening();
+                } else if (audio.dataset.namePrompt === '1') {
+                    if (window.__asiArmNameListening) window.__asiArmNameListening();
                 } else {
                     setStatusMode('listen');
                 }
@@ -338,7 +364,8 @@ BOOT_JS = """
             if (!root) return;
             let lastAutoplaySrc = '';
             const playLatest = () => {
-                const audio = root.querySelector('audio[src], video[src]') || root.querySelector('audio, video');
+                const audios = Array.from(root.querySelectorAll('audio[src], video[src], audio, video'));
+                const audio = audios.length ? audios[audios.length - 1] : null;
                 if (!audio?.src) return;
                 bindCaptionSync(audio);
                 if (audio.dataset.intro === '1') {
@@ -406,6 +433,7 @@ BOOT_JS = """
             return (
                 root.querySelector('textarea')
                 || root.querySelector('input[type="text"]')
+                || root.querySelector('input[type="number"]')
                 || root.querySelector('input:not([type="checkbox"]):not([type="hidden"])')
             );
         };
@@ -425,8 +453,21 @@ BOOT_JS = """
         window.__asiArmListening = () => {
             if (window.__asiMicArmed) return;
             window.__asiMicArmed = true;
-            console.log('[ASI-DEBUG] arming listen after priest audio ended');
+            console.log('[ASI-DEBUG] arming listen after intro audio ended');
             window.__asiPulseListenTick();
+        };
+        window.__asiPulseNameArmTick = () => {
+            setTimeout(() => {
+                const tickField = window.__asiFindField('name-arm-tick');
+                if (!tickField) return;
+                tickField.value = String(Number(tickField.value || '0') + 1);
+                window.__asiPulseField(tickField);
+            }, 80);
+        };
+        window.__asiArmNameListening = () => {
+            console.log('[ASI-DEBUG] arming listen for name after name prompt');
+            setStatusMode('listen');
+            window.__asiPulseNameArmTick();
             if (window.__asiBrowserMic) window.__asiBrowserMic.start();
         };
     }
@@ -465,6 +506,7 @@ BOOT_JS = """
                 return (
                     root.querySelector('textarea')
                     || root.querySelector('input[type="text"]')
+                    || root.querySelector('input[type="number"]')
                     || root.querySelector('input:not([type="checkbox"]):not([type="hidden"])')
                 );
             };
@@ -553,8 +595,13 @@ BOOT_JS = """
             };
 
             const priestSpeaking = () => {
-                const audio = document.querySelector('#priest-audio audio');
-                return !!(audio && audio.src && !audio.paused && !audio.ended);
+                const root = document.getElementById('priest-audio');
+                if (!root) return false;
+                const audios = root.querySelectorAll('audio');
+                for (const audio of audios) {
+                    if (audio.src && !audio.paused && !audio.ended) return true;
+                }
+                return false;
             };
 
             const tick = () => {
@@ -642,6 +689,14 @@ print("Loading Supra model…")
 engine = SupraReasoningModel(device="auto")
 print(f"Supra ready on {engine.torch_device} ({engine.dtype}).")
 
+print("Loading knowledge tree…")
+knowledge_tree = KnowledgeTree()
+print(f"Knowledge tree ready ({knowledge_tree.entry_count()} entries).")
+
+print("Loading conversation memory…")
+conversation_memory = ConversationMemory()
+print(f"Conversation memory ready ({len(list(conversation_memory.root.glob('*.json')))} profiles).")
+
 print("Loading Kokoro TTS…")
 KokoroTTS(voice=VOICES[PRIEST_VOICE], use_gpu=True)
 print("Kokoro ready.")
@@ -670,7 +725,13 @@ def priest_playback(chunks: list[np.ndarray]):
     return SAMPLE_RATE, np.ascontiguousarray(audio, dtype=np.float32)
 
 
-def priest_audio_html(playback, caption: str = "", *, intro: bool = False) -> str:
+def priest_audio_html(
+    playback,
+    caption: str = "",
+    *,
+    intro: bool = False,
+    name_prompt: bool = False,
+) -> str:
     if playback is None:
         return gr.skip()
     if isinstance(playback, tuple) and len(playback) == 2:
@@ -696,11 +757,61 @@ def priest_audio_html(playback, caption: str = "", *, intro: bool = False) -> st
         f' data-caption="{html_module.escape(caption, quote=True)}"' if caption else ""
     )
     intro_attr = ' data-intro="1"' if intro else ""
-    return f'<audio autoplay{caption_attr}{intro_attr} src="data:audio/wav;base64,{encoded}"></audio>'
+    name_attr = ' data-name-prompt="1"' if name_prompt else ""
+    onplay_attr = (
+        ' onplay="if(window.__asiBrowserMic)window.__asiBrowserMic.start()"'
+        if name_prompt
+        else ""
+    )
+    onended_attr = (
+        ' onended="if(window.__asiArmNameListening)window.__asiArmNameListening()"'
+        if name_prompt
+        else ""
+    )
+    return (
+        f'<audio autoplay{caption_attr}{intro_attr}{name_attr}{onplay_attr}{onended_attr} '
+        f'src="data:audio/wav;base64,{encoded}"></audio>'
+    )
 
 
-def format_chat_answer(answer: str) -> str:
-    return answer.strip() or "…"
+def format_chat_answer(answer: str, listener_name: str | None = None) -> str:
+    return clean_priest_answer(answer, listener_name=listener_name) or "…"
+
+
+def memory_profile_for_state(state: ConversationState) -> MemoryProfile | None:
+    if not state.name_captured or not state.user_name:
+        return None
+    if state.memory_profile_id:
+        profile = conversation_memory.load_by_id(state.memory_profile_id)
+        if profile is not None:
+            return profile
+    profile = conversation_memory.load(state.user_name)
+    state.memory_profile_id = profile.profile_id
+    return profile
+
+
+def start_memory_session(state: ConversationState, name: str) -> MemoryProfile:
+    profile = conversation_memory.load(name)
+    conversation_memory.begin_session(profile)
+    state.memory_profile_id = profile.profile_id
+    return profile
+
+
+def remember_conversation_turn(
+    state: ConversationState,
+    user_text: str,
+    assistant_text: str,
+) -> None:
+    profile = memory_profile_for_state(state)
+    if profile is None:
+        return
+    conversation_memory.add_turn(profile, user_text, assistant_text)
+
+
+def trim_history_for_prompt(history: list[dict]) -> list[dict]:
+    if len(history) <= MAX_PROMPT_HISTORY_MESSAGES:
+        return history
+    return history[-MAX_PROMPT_HISTORY_MESSAGES:]
 
 
 def circle_text_html(text: str, role: str = "assistant") -> str:
@@ -730,6 +841,14 @@ def circle_awaiting_html() -> str:
         '<span class="circle-copy">Awaiting conversation</span>'
         '</p></div>'
     )
+
+
+def listening_circle_html(state: ConversationState) -> str:
+    if state.awaiting_name and not state.name_captured:
+        return circle_text_html("What may I call you?", "assistant")
+    if state.user_name:
+        return circle_text_html(f"Listening, {state.user_name}…", "assistant")
+    return circle_awaiting_html()
 
 
 def circle_out(state: ConversationState, html: str | None = None) -> str:
@@ -880,7 +999,11 @@ def deliver_introduction(
     if state.introduced:
         debug_log(state, "intro: skip replay (session already introduced)", "INTRO")
         if not state.mic_enabled:
-            yield activate_listening(state)
+            if state.name_captured:
+                yield activate_listening(state)
+            else:
+                yield from prompt_for_user_name(state, voice_label, speed, enable_tts)
+            return
         else:
             yield out(
                 state,
@@ -915,9 +1038,11 @@ def deliver_introduction(
     state.draft_user = False
     debug_log(state, "intro: started (mic disabled)", "INTRO")
 
-    intro = CHURCH_INTRODUCTION.strip()
+    intro = pick_intro_greeting()
+    opening = intro_opening_line(intro)
     history = [{"role": "assistant", "content": intro}]
     state.history = history
+    debug_log(state, f'intro: greeting — "{opening}"', "INTRO")
 
     yield out(
         state,
@@ -926,7 +1051,7 @@ def deliver_introduction(
         gr.skip(),
         MODE_ARRIVE,
         0.0,
-        circle_out(state, circle_text_html("Peace be with you.", "assistant")),
+        circle_out(state, circle_text_html(opening, "assistant")),
         "intro: waiting for priest voice",
     )
 
@@ -983,12 +1108,7 @@ def deliver_introduction(
     state.mic_enabled = False
     state.idle_chunks = 0
     state.interrupted = False
-    history = [
-        {
-            "role": "assistant",
-            "content": "Peace be with you. Speak, and I will answer as your priest.",
-        }
-    ]
+    history = [{"role": "assistant", "content": intro}]
     state.history = history
 
     yield out(
@@ -1020,7 +1140,7 @@ def activate_listening(state: ConversationState):
         gr.skip(),
         MODE_LISTEN,
         0.0,
-        circle_out(state, circle_awaiting_html()),
+        circle_out(state, listening_circle_html(state)),
         "listen: ACTIVATED — browser mic captures speech (speak now)",
         "OK",
     )
@@ -1033,12 +1153,239 @@ def activate_listening_light(state: ConversationState):
         MODE_LISTEN,
         state,
         0.0,
-        circle_out(state, circle_awaiting_html()),
+        circle_out(state, listening_circle_html(state)),
         debug_log(
             state,
             "listen: ACTIVATED — browser mic captures speech (speak now)",
             "OK",
         ),
+    )
+
+
+def activate_name_listening(state: ConversationState):
+    _arm_listening_state(state)
+    state.awaiting_name = True
+    state.awaiting_response = False
+    return (
+        MODE_LISTEN,
+        state,
+        0.0,
+        circle_out(state, listening_circle_html(state)),
+        debug_log(state, "name: listening for user's name", "OK"),
+    )
+
+
+def prompt_for_user_name(
+    state: ConversationState,
+    voice_label: str,
+    speed: float,
+    enable_tts: bool,
+):
+    if state.name_captured:
+        yield activate_listening(state)
+        return
+
+    name_prompt = pick_name_prompt()
+    state.awaiting_name = True
+    state.mic_enabled = False
+    state.awaiting_response = True
+    debug_log(state, f'name: asking — "{name_prompt}"', "INTRO")
+
+    history = list(state.history)
+    history.append({"role": "assistant", "content": name_prompt})
+    state.history = history
+
+    yield out(
+        state,
+        history,
+        "",
+        gr.skip(),
+        MODE_SPEAK,
+        0.0,
+        circle_out(state, circle_text_html(name_prompt, "assistant")),
+        "name: speaking name question",
+    )
+
+    last_playback = None
+    if enable_tts:
+        tts = priest_tts(voice_label, speed)
+        for playback, caption in captioned_priest_voice(tts, name_prompt, words_per_step=2):
+            last_playback = playback
+            yield out(
+                state,
+                history,
+                "",
+                gr.skip(),
+                MODE_SPEAK,
+                0.0,
+                circle_out(state, circle_text_html(caption, "assistant")),
+            )
+
+    state.awaiting_response = False
+    _arm_listening_state(state)
+    if last_playback is not None:
+        yield out(
+            state,
+            history,
+            "",
+            priest_audio_html(last_playback, caption=name_prompt, name_prompt=True),
+            MODE_LISTEN,
+            0.0,
+            circle_out(state, listening_circle_html(state)),
+            "name: waiting for user to speak their name",
+            "INTRO",
+        )
+    else:
+        state.mic_enabled = True
+        yield out(
+            state,
+            history,
+            "",
+            gr.skip(),
+            MODE_LISTEN,
+            0.0,
+            circle_out(state, listening_circle_html(state)),
+            "name: listening (no TTS)",
+            "INTRO",
+        )
+
+
+def capture_user_name_turn(
+    state: ConversationState,
+    _max_new_tokens: int,
+    _temperature: float,
+    _top_p: float,
+    _top_k: int,
+    enable_tts: bool,
+    voice_label: str,
+    speed: float,
+):
+    audio_input = resolve_turn_audio(state)
+    state.reset_utterance()
+    state.awaiting_response = True
+
+    if audio_input is None:
+        state.awaiting_response = False
+        yield out(
+            state,
+            state.history,
+            "",
+            gr.skip(),
+            MODE_LISTEN,
+            0.0,
+            circle_keep(state),
+            "name: no audio",
+            "WARN",
+        )
+        return
+
+    sr, audio = audio_input
+    try:
+        text = stt.transcribe(audio_input)
+    except Exception as exc:
+        state.awaiting_response = False
+        yield out(
+            state,
+            state.history,
+            "",
+            gr.skip(),
+            MODE_LISTEN,
+            0.0,
+            circle_out(state, circle_text_html("I did not catch your name. Please say it again.", "assistant")),
+            f"name: STT failed — {exc}",
+            "ERR",
+        )
+        return
+
+    name = extract_user_name(text)
+    debug_log(state, f'name: heard "{text}" → "{name}"', "STT")
+
+    if not name:
+        state.awaiting_response = False
+        state.awaiting_name = True
+        retry = "Forgive me—I did not catch your name. Please say it clearly."
+        history = list(state.history)
+        history.append({"role": "assistant", "content": retry})
+        state.history = history
+        yield from speak_priest_message(
+            state,
+            retry,
+            voice_label,
+            speed,
+            enable_tts,
+            MODE_SPEAK,
+        )
+        state.awaiting_name = True
+        state.mic_enabled = True
+        yield out(
+            state,
+            state.history,
+            "",
+            gr.skip(),
+            MODE_LISTEN,
+            0.0,
+            circle_out(state, listening_circle_html(state)),
+            "name: retry listening",
+            "WARN",
+        )
+        return
+
+    state.user_name = name
+    state.name_captured = True
+    state.awaiting_name = False
+    state.awaiting_response = False
+
+    profile = start_memory_session(state, name)
+    if profile.turns or profile.facts:
+        debug_log(
+            state,
+            f"memory: resumed {len(profile.turns)} prior turns for {name}",
+            "MEM",
+        )
+    else:
+        debug_log(state, f"memory: new profile for {name}", "MEM")
+
+    history = list(state.history)
+    if history and history[-1].get("role") == "user" and history[-1].get("content") == "…":
+        history[-1] = {"role": "user", "content": name}
+    else:
+        history.append({"role": "user", "content": name})
+    state.history = history
+
+    welcome = pick_name_welcome(name)
+
+    yield out(
+        state,
+        history,
+        "",
+        gr.skip(),
+        MODE_HEAR,
+        0.0,
+        circle_out(state, circle_text_html(name, "user")),
+        f'name: captured "{name}"',
+        "OK",
+    )
+
+    yield from speak_priest_message(
+        state,
+        welcome,
+        voice_label,
+        speed,
+        enable_tts,
+        MODE_SPEAK,
+    )
+
+    state.mic_enabled = True
+    yield out(
+        state,
+        state.history,
+        "",
+        gr.skip(),
+        MODE_LISTEN,
+        0.0,
+        circle_out(state, listening_circle_html(state)),
+        f"name: welcome spoken — conversation open for {name}",
+        "OK",
     )
 
 
@@ -1167,18 +1514,39 @@ def run_assistant_turn(
     yield out(state, history, "", gr.skip(), MODE_HEAR, 0.0, circle_out(state, circle_text_html(text, "user")), f'user said: "{text}"', "OK")
     yield out(state, history, "", gr.skip(), MODE_THINK, 0.0, circle_out(state, circle_text_html("…", "assistant")), "LLM: generating reply…", "LLM")
 
-    prior = history[:-2]
+    prior = trim_history_for_prompt(history[:-2])
+    knowledge_context, rag_hits = retrieve_knowledge(knowledge_tree, text, top_k=4)
+    if rag_hits:
+        topics = "; ".join(" > ".join(hit.topic_path) for hit in rag_hits[:2])
+        debug_log(state, f"RAG: {len(rag_hits)} hits ({topics})", "RAG")
+    else:
+        debug_log(state, "RAG: no knowledge hits", "RAG")
+
+    profile = memory_profile_for_state(state)
+    memory_context = conversation_memory.build_context(profile)
+    if memory_context:
+        debug_log(
+            state,
+            f"memory: injected context ({len(profile.turns) if profile else 0} stored turns)",
+            "MEM",
+        )
+
     tts = priest_tts(voice_label, speed) if enable_tts else None
 
     consumed_answer_len = 0
     phrase_buffer = ""
     thought = ""
     spoken_chunks: list[np.ndarray] = []
+    saved_user_text = text
 
     try:
+        listener_name = state.user_name if state.name_captured else None
         for update in engine.generate_stream(
             text,
             history=prior,
+            knowledge_context=knowledge_context or None,
+            memory_context=memory_context or None,
+            listener_name=listener_name,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -1189,11 +1557,12 @@ def run_assistant_turn(
 
             thought = update["thought"]
             answer = update["answer"]
-            history[-1]["content"] = format_chat_answer(answer)
+            listener_name = state.user_name if state.name_captured else None
+            history[-1]["content"] = format_chat_answer(answer, listener_name)
             state.history = history
 
             mode = MODE_SPEAK if answer else MODE_THINK
-            display = stream_display_snippet(answer)
+            display = stream_display_snippet(history[-1]["content"])
             yield out(state, history, thought, gr.skip(), mode, 0.0, circle_out(state, circle_text_html(display, "assistant")))
 
             if not enable_tts or not tts or not answer:
@@ -1208,7 +1577,7 @@ def run_assistant_turn(
 
             phrases, phrase_buffer = pop_speakable_phrases(phrase_buffer)
             spoken_words = 0
-            answer_words = format_chat_answer(answer).split()
+            answer_words = format_chat_answer(answer, listener_name).split()
             for phrase in phrases:
                 if state.interrupted:
                     break
@@ -1221,7 +1590,7 @@ def run_assistant_turn(
                     yield out(state, history, thought, gr.skip(), MODE_SPEAK, 0.0, circle_out(state, circle_text_html(caption, "assistant")))
 
         if not state.interrupted and enable_tts and tts and phrase_buffer.strip():
-            answer_words = format_chat_answer(history[-1]["content"]).split()
+            answer_words = history[-1]["content"].split()
             spoken_words = max(0, len(answer_words) - len(phrase_buffer.split()))
             for _, chunk in tts.stream(phrase_buffer.strip()):
                 if state.interrupted:
@@ -1272,6 +1641,12 @@ def run_assistant_turn(
             "OK",
         )
     finally:
+        if state.name_captured and saved_user_text and history:
+            last = history[-1]
+            if last.get("role") == "assistant":
+                reply = str(last.get("content", "")).strip()
+                if reply and reply != "…":
+                    remember_conversation_turn(state, saved_user_text, reply)
         state.awaiting_response = False
         state.idle_chunks = 0
         state.draft_user = False
@@ -1541,6 +1916,11 @@ def on_browser_audio(
     state.awaiting_response = True
     state.history = history_with_draft_user(state.history)
 
+    if state.awaiting_name and not state.name_captured:
+        turn_msg = "browser: capturing user name"
+    else:
+        turn_msg = "browser: STT → Supra → circle text"
+
     yield bout(
         state,
         "",
@@ -1550,11 +1930,16 @@ def on_browser_audio(
         MODE_HEAR,
         0.0,
         circle_out(state, circle_text_html("…", "user")),
-        "browser: STT → Supra → circle text",
+        turn_msg,
         "TURN",
     )
 
-    for item in run_assistant_turn(
+    turn_fn = (
+        capture_user_name_turn
+        if state.awaiting_name and not state.name_captured
+        else run_assistant_turn
+    )
+    for item in turn_fn(
         state,
         max_new_tokens,
         temperature,
@@ -1582,7 +1967,7 @@ footer { display: none !important; }
     padding: 0 !important;
     margin: 0 !important;
 }
-#mic-level, #status-box, #chat-panel, #guide-links, #mic-b64, #mic-tick, #listen-tick { display: none !important; }
+#mic-level, #status-box, #chat-panel, #guide-links, #mic-b64, #mic-tick, #listen-tick, #name-arm-tick { display: none !important; }
 #priest-audio {
     position: fixed !important;
     left: -9999px !important;
@@ -1813,6 +2198,7 @@ with gr.Blocks(
     )
     mic_tick = gr.Number(value=0, elem_id="mic-tick", show_label=False, visible="hidden")
     listen_tick = gr.Number(value=0, elem_id="listen-tick", show_label=False, visible="hidden")
+    name_arm_tick = gr.Number(value=0, elem_id="name-arm-tick", show_label=False, visible="hidden")
 
     mic_level = gr.Number(value=0.0, elem_id="mic-level", show_label=False, visible="hidden")
 
@@ -1840,6 +2226,21 @@ with gr.Blocks(
         temperature = gr.Slider(0.0, 1.2, value=0.7, step=0.05, label="Temperature")
         top_p = gr.Slider(0.1, 1.0, value=0.8, step=0.05, label="Top-p")
         top_k = gr.Slider(1, 100, value=25, step=1, label="Top-k")
+        gr.Markdown("### Knowledge tree (RAG)")
+        knowledge_topic = gr.Dropdown(
+            label="Topic",
+            choices=knowledge_tree.list_topic_paths(),
+            value=knowledge_tree.list_topic_paths()[0][1],
+        )
+        knowledge_question = gr.Textbox(label="Question", lines=2)
+        knowledge_answer = gr.Textbox(label="Answer", lines=4)
+        knowledge_tags = gr.Textbox(
+            label="Tags",
+            placeholder="agi, alignment, ethics",
+            lines=1,
+        )
+        knowledge_status = gr.Textbox(label="Knowledge status", interactive=False, lines=2)
+        add_knowledge_btn = gr.Button("Add Q&A to knowledge tree")
         gr.Markdown(
             f"**Guide:** [{MODEL_ID}](https://huggingface.co/{MODEL_ID}) · "
             f"**Voice:** [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M)",
@@ -1861,7 +2262,21 @@ with gr.Blocks(
     ).then(js=AFTER_INTRO_JS)
 
     listen_tick.change(
-        activate_listening_light,
+        prompt_for_user_name,
+        inputs=[state, voice, speed, enable_tts],
+        outputs=turn_outputs,
+        queue=True,
+        concurrency_limit=1,
+    ).then(
+        activate_name_listening,
+        inputs=[state],
+        outputs=listen_outputs,
+        queue=True,
+        concurrency_limit=1,
+    ).then(js=START_NAME_MIC_JS)
+
+    name_arm_tick.change(
+        activate_name_listening,
         inputs=[state],
         outputs=listen_outputs,
         queue=True,
@@ -1874,6 +2289,45 @@ with gr.Blocks(
         outputs=browser_outputs,
         queue=True,
         concurrency_limit=1,
+    )
+
+    def on_add_knowledge(
+        topic_path: str,
+        question: str,
+        answer: str,
+        tags: str,
+        state: ConversationState,
+    ):
+        try:
+            entry = knowledge_tree.add_entry(
+                topic_path,
+                question,
+                answer,
+                tags=[tag.strip() for tag in (tags or "").split(",") if tag.strip()],
+            )
+            titles = " > ".join(knowledge_tree.topic_titles(topic_path))
+            status = (
+                f"Saved under {titles}. "
+                f"Tree now has {knowledge_tree.entry_count()} entries."
+            )
+            debug = debug_log(
+                state,
+                f"KNOWLEDGE: added {entry.id} under {topic_path}",
+                "OK",
+            )
+            return status, debug, gr.update(choices=knowledge_tree.list_topic_paths())
+        except Exception as exc:
+            return (
+                f"Could not save: {exc}",
+                debug_log(state, f"KNOWLEDGE: save failed — {exc}", "ERR"),
+                gr.update(),
+            )
+
+    add_knowledge_btn.click(
+        on_add_knowledge,
+        inputs=[knowledge_topic, knowledge_question, knowledge_answer, knowledge_tags, state],
+        outputs=[knowledge_status, debug_panel, knowledge_topic],
+        queue=True,
     )
 
     def debug_heartbeat(state: ConversationState):

@@ -45,6 +45,10 @@ class ConversationState:
     debug_lines: list[str] = field(default_factory=list)
     debug_tick: int = 0
     mic_seen: bool = False
+    user_name: str = ""
+    awaiting_name: bool = False
+    name_captured: bool = False
+    memory_profile_id: str = ""
 
     def reset_utterance(self) -> None:
         self.speech_chunks = []

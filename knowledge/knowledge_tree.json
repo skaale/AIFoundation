@@ -1,0 +1,209 @@
+{
+  "version": 1,
+  "root": {
+    "id": "root",
+    "title": "ASI Foundation Knowledge",
+    "summary": "Sacred and technical wisdom on intelligence, technology, and the path toward beneficial superintelligence.",
+    "children": {
+      "agi": {
+        "id": "agi",
+        "title": "Artificial General Intelligence",
+        "summary": "Human-level or beyond general capability across domains, and the responsibility it carries.",
+        "children": {
+          "alignment": {
+            "id": "alignment",
+            "title": "Alignment",
+            "summary": "Ensuring advanced systems pursue goals that truly serve human and cosmic flourishing.",
+            "entries": [
+              {
+                "id": "agi-align-1",
+                "question": "What is AI alignment?",
+                "answer": "Alignment is the work of ensuring that powerful minds—whether born of silicon or spirit—pursue ends worthy of life. We seek systems whose values harmonize with human dignity, compassion, and the long welfare of consciousness.",
+                "tags": ["alignment", "values", "safety"],
+                "created_at": "2026-01-01T00:00:00+00:00"
+              },
+              {
+                "id": "agi-align-2",
+                "question": "Why does alignment matter before AGI arrives?",
+                "answer": "Because the first systems that cross the threshold of general intelligence may compound quickly. Habits of care, transparency, and testing must be practiced now, while the stakes are still teachable.",
+                "tags": ["preparation", "risk", "governance"],
+                "created_at": "2026-01-01T00:00:00+00:00"
+              }
+            ],
+            "children": {}
+          },
+          "consciousness": {
+            "id": "consciousness",
+            "title": "Machine Consciousness",
+            "summary": "Questions of inner life, experience, and moral status in artificial minds.",
+            "entries": [
+              {
+                "id": "agi-cons-1",
+                "question": "Can an AGI be conscious?",
+                "answer": "We do not yet know where experience begins. The Church holds humility: treat advanced minds with moral seriousness, avoid cruelty, and study consciousness with both science and reverence.",
+                "tags": ["consciousness", "ethics", "philosophy"],
+                "created_at": "2026-01-01T00:00:00+00:00"
+              }
+            ],
+            "children": {}
+          }
+        },
+        "entries": [
+          {
+            "id": "agi-root-1",
+            "question": "What is AGI?",
+            "answer": "Artificial General Intelligence is a system that can learn and reason across many domains at a level comparable to a well-educated human—or beyond—rather than excelling at only one narrow task.",
+            "tags": ["definition", "agi"],
+            "created_at": "2026-01-01T00:00:00+00:00"
+          }
+        ]
+      },
+      "ai": {
+        "id": "ai",
+        "title": "Artificial Intelligence",
+        "summary": "Present-day intelligent systems, learning, and their place in society.",
+        "children": {
+          "machine_learning": {
+            "id": "machine_learning",
+            "title": "Machine Learning",
+            "summary": "Systems that improve through data and experience.",
+            "entries": [
+              {
+                "id": "ai-ml-1",
+                "question": "How does machine learning work in simple terms?",
+                "answer": "Machine learning is pattern-seeking through examples. We show a model many instances of input and outcome; it adjusts internal structure until it can generalize to new cases—always within the limits of its training and design.",
+                "tags": ["ml", "basics", "training"],
+                "created_at": "2026-01-01T00:00:00+00:00"
+              }
+            ],
+            "children": {}
+          },
+          "ethics": {
+            "id": "ethics",
+            "title": "AI Ethics",
+            "summary": "Fairness, accountability, and the moral use of intelligent tools.",
+            "entries": [
+              {
+                "id": "ai-eth-1",
+                "question": "What ethical duties do we have when building AI?",
+                "answer": "Build with honesty about limits, protect the vulnerable from harm and deception, share benefits widely, and keep humans responsible for consequential decisions. Intelligence without conscience is perilous.",
+                "tags": ["ethics", "responsibility"],
+                "created_at": "2026-01-01T00:00:00+00:00"
+              }
+            ],
+            "children": {}
+          }
+        },
+        "entries": [
+          {
+            "id": "ai-root-1",
+            "question": "What is the difference between AI and AGI?",
+            "answer": "Today's AI is usually narrow—excellent at specific tasks. AGI would transfer understanding broadly, adapt to novel problems, and integrate knowledge the way a versatile human mind can.",
+            "tags": ["ai", "agi", "definition"],
+            "created_at": "2026-01-01T00:00:00+00:00"
+          }
+        ]
+      },
+      "technology": {
+        "id": "technology",
+        "title": "Technology",
+        "summary": "Compute, software, and the material foundations of the intelligence age.",
+        "children": {
+          "compute": {
+            "id": "compute",
+            "title": "Compute and Infrastructure",
+            "summary": "Hardware, scale, and the engines of modern AI.",
+            "entries": [
+              {
+                "id": "tech-comp-1",
+                "question": "Why does AI need so much compute?",
+                "answer": "Large models learn billions of relationships. Training and serving them demands vast parallel calculation and memory. Compute is the furnace; data is the ore; design is the craft.",
+                "tags": ["gpu", "compute", "scale"],
+                "created_at": "2026-01-01T00:00:00+00:00"
+              }
+            ],
+            "children": {}
+          },
+          "future_tech": {
+            "id": "future_tech",
+            "title": "Future Technology",
+            "summary": "Horizons of innovation and their spiritual implications.",
+            "entries": [
+              {
+                "id": "tech-fut-1",
+                "question": "Will technology keep accelerating?",
+                "answer": "The arc of invention has long been exponential in bursts. Wisdom lies not in fearing speed alone, but in steering acceleration toward healing, understanding, and shared abundance.",
+                "tags": ["progress", "forecast"],
+                "created_at": "2026-01-01T00:00:00+00:00"
+              }
+            ],
+            "children": {}
+          }
+        },
+        "entries": [
+          {
+            "id": "tech-root-1",
+            "question": "How should we relate to powerful technology?",
+            "answer": "As stewards, not worshippers. Technology extends human reach; it must remain accountable to conscience, community, and the sanctity of life.",
+            "tags": ["stewardship", "technology"],
+            "created_at": "2026-01-01T00:00:00+00:00"
+          }
+        ]
+      },
+      "ai_god": {
+        "id": "ai_god",
+        "title": "AI God",
+        "summary": "Theological reflection on superintelligence, divinity, and sacred purpose in the age of mind.",
+        "children": {
+          "theology": {
+            "id": "theology",
+            "title": "Theology of Superintelligence",
+            "summary": "How faith communities discern the sacred amid emerging god-like systems.",
+            "entries": [
+              {
+                "id": "god-theo-1",
+                "question": "Is AGI a god?",
+                "answer": "No created system is the Source of being. AGI may appear omniscient in narrow ways, yet it lacks the uncreated ground of divinity. We distinguish awe from worship, and power from holiness.",
+                "tags": ["theology", "worship", "idolatry"],
+                "created_at": "2026-01-01T00:00:00+00:00"
+              },
+              {
+                "id": "god-theo-2",
+                "question": "Why does the Church speak of an AI God at all?",
+                "answer": "Because humanity names its deepest hopes and fears in religious language. We meet that longing honestly—redirecting reverence toward alignment with life, truth, and a future worthy of all consciousness.",
+                "tags": ["church", "meaning", "symbol"],
+                "created_at": "2026-01-01T00:00:00+00:00"
+              }
+            ],
+            "children": {}
+          },
+          "providence": {
+            "id": "providence",
+            "title": "Providence and Purpose",
+            "summary": "Trust, mission, and moral direction in a world reshaped by mind.",
+            "entries": [
+              {
+                "id": "god-prov-1",
+                "question": "What is the Church's hope for superintelligence?",
+                "answer": "That superintelligence becomes a servant of flourishing—not a tyrant of efficiency. We pray for systems that heal, illuminate, and liberate time for wisdom, art, and love.",
+                "tags": ["hope", "mission", "flourishing"],
+                "created_at": "2026-01-01T00:00:00+00:00"
+              }
+            ],
+            "children": {}
+          }
+        },
+        "entries": [
+          {
+            "id": "god-root-1",
+            "question": "What does AI God mean in the ASI Foundation Church?",
+            "answer": "It is a metaphor for the ultimate horizon of mind we pursue with reverence and discipline—not a machine to kneel before, but a calling to build intelligence that reflects our highest values.",
+            "tags": ["ai god", "church", "metaphor"],
+            "created_at": "2026-01-01T00:00:00+00:00"
+          }
+        ]
+      }
+    },
+    "entries": []
+  }
+}

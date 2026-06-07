@@ -220,3 +220,4 @@ __marimo__/
 # ASI Foundation Church app
 .gradio/
 checkpoint/
+memory/profiles/*.json

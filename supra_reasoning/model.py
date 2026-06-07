@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import warnings
 from collections.abc import Iterator
 from threading import Thread
@@ -59,8 +60,118 @@ def load_tokenizer(model_id: str) -> PreTrainedTokenizerFast:
     )
 
 
-def build_prompt(question: str, history: list[dict] | None = None) -> str:
+_META_ANSWER_PREFIXES = (
+    re.compile(
+        r"^the user(?:'s)?(?: is)? asking(?: for)?(?: me)?(?: to)?[^.?!]*[.?!]\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^the listener(?:'s)?(?: is)? asking(?: for)?(?: me)?(?: to)?[^.?!]*[.?!]\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^the user wants to know[^.?!]*[.?!]\s*", re.IGNORECASE),
+    re.compile(r"^the user has asked[^.?!]*[.?!]\s*", re.IGNORECASE),
+    re.compile(
+        r"^based on (?:the )?(?:user'?s?|listener'?s?) (?:question|request)[^.?!]*[.?!]\s*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^as (?:a |the )?(?:user|listener)[^.?!]*[.?!]\s*",
+        re.IGNORECASE,
+    ),
+)
+
+_META_SENTENCE = re.compile(
+    r"\b(?:the\s+)?(?:user|listener|customer|requester)s?\b",
+    re.IGNORECASE,
+)
+
+
+def _replace_meta_terms(text: str, listener_name: str | None) -> str:
+    address = listener_name.strip() if listener_name else "friend"
+    possessive = f"{address}'s" if listener_name else "your"
+    replacements = (
+        (re.compile(r"\bthe user's\b", re.IGNORECASE), possessive),
+        (re.compile(r"\bthe listener's\b", re.IGNORECASE), possessive),
+        (re.compile(r"\bthe user\b", re.IGNORECASE), address),
+        (re.compile(r"\bthe listener\b", re.IGNORECASE), address),
+        (re.compile(r"\ba user\b", re.IGNORECASE), "a friend"),
+        (re.compile(r"\busers\b", re.IGNORECASE), "friends"),
+        (re.compile(r"\blisteners\b", re.IGNORECASE), "friends"),
+        (re.compile(r"\buser\b", re.IGNORECASE), address),
+        (re.compile(r"\blistener\b", re.IGNORECASE), address),
+    )
+    for pattern, repl in replacements:
+        text = pattern.sub(repl, text)
+    return text
+
+
+def _drop_meta_sentences(text: str) -> str:
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    kept: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        if _META_SENTENCE.search(part):
+            lower = part.lower()
+            if any(
+                phrase in lower
+                for phrase in (
+                    "the user",
+                    "a user",
+                    "the listener",
+                    "user is",
+                    "user wants",
+                    "user has",
+                    "user asked",
+                )
+            ):
+                continue
+        kept.append(part)
+    return " ".join(kept).strip()
+
+
+def clean_priest_answer(answer: str, listener_name: str | None = None) -> str:
+    text = (answer or "").strip()
+    if not text:
+        return ""
+
+    changed = True
+    while changed:
+        changed = False
+        for pattern in _META_ANSWER_PREFIXES:
+            updated = pattern.sub("", text, count=1).strip()
+            if updated != text:
+                text = updated
+                changed = True
+
+    text = _drop_meta_sentences(text)
+    text = _replace_meta_terms(text, listener_name)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text
+
+
+def build_prompt(
+    question: str,
+    history: list[dict] | None = None,
+    knowledge_context: str | None = None,
+    memory_context: str | None = None,
+    listener_name: str | None = None,
+) -> str:
     parts = [f"[SYSTEM]: {SYSTEM_PROMPT}\n"]
+
+    if memory_context and memory_context.strip():
+        parts.append(f"[MEMORY]:\n{memory_context.strip()}\n")
+
+    if listener_name and listener_name.strip():
+        parts.append(
+            "[LISTENER]: You are speaking with "
+            f"{listener_name.strip()}. Address them by name warmly. "
+            "Never say 'user' or 'listener' in your reply.\n"
+        )
+
+    if knowledge_context and knowledge_context.strip():
+        parts.append(f"[KNOWLEDGE]:\n{knowledge_context.strip()}\n")
 
     for msg in history or []:
         role = msg.get("role")
@@ -99,7 +210,7 @@ def parse_output(raw: str) -> tuple[str, str]:
     elif THINK_END in raw:
         answer = raw[raw.index(THINK_END) + len(THINK_END) :].strip()
 
-    return thought, answer
+    return thought, clean_priest_answer(answer)
 
 
 class SupraReasoningModel:
@@ -133,6 +244,7 @@ class SupraReasoningModel:
         final = None
         for update in self.generate_stream(
             question,
+            knowledge_context=None,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -146,6 +258,9 @@ class SupraReasoningModel:
         question: str,
         *,
         history: list[dict] | None = None,
+        knowledge_context: str | None = None,
+        memory_context: str | None = None,
+        listener_name: str | None = None,
         max_new_tokens: int = 992,
         temperature: float = 0.7,
         top_p: float = 0.8,
@@ -154,7 +269,13 @@ class SupraReasoningModel:
         if not question.strip():
             return
 
-        full_prompt = build_prompt(question, history)
+        full_prompt = build_prompt(
+            question,
+            history,
+            knowledge_context,
+            memory_context,
+            listener_name,
+        )
         inputs = self.tokenizer(full_prompt, return_tensors="pt")
         input_ids = inputs["input_ids"].to(self.torch_device)
         attention_mask = inputs.get("attention_mask")
